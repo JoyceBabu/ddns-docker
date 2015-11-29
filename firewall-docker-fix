@@ -1,0 +1,15 @@
+#!/bin/sh
+
+DOCKER_IFACE=docker0
+
+# Create DYNDOCKER Chain
+/sbin/iptables -N DYNDOCKER
+
+# Redirect packets for docker interface to DYNDOCKER chain
+/sbin/iptables -I FORWARD -o $DOCKER_IFACE -j DYNDOCKER
+
+# Add additional IPs to whitelist
+# /sbin/iptables -I FORWARD -o $DOCKER_IFACE -s w.x.y.z -j DOCKER 
+
+# Update DDNS
+/usr/local/bin/ddns-docker -f

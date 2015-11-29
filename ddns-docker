@@ -1,0 +1,78 @@
+#!/bin/bash
+
+# Docker interface name
+DOCKER_IFACE=docker0
+
+# List of static ip addresses to whitelist
+FILE_LIST_STATIC_IP=/etc/csf/csf.allow
+
+# List of DDNS hostnames to whitelist
+FILE_LIST_DDNS_HOST=/etc/csf/csf.dyndns
+
+# List of DDNS IP addresses
+# Required only for CSF integration mode.
+# The option is ignored when FILE_LIST_DDNS_HOST is set
+# FILE_LIST_DDNS_IP=/var/lib/csf/csf.tempdyn
+
+# Resolve dynamic dns hosts from file, if specified
+if [ ! -z "$FILE_LIST_DDNS_HOST" ]; then
+    echo -n `date +"[%D %T]"` "Resolving DDNS hosts - "
+    FILE_LIST_DDNS_IP="$FILE_LIST_DDNS_HOST.tempdyn"
+    echo -n "" > $FILE_LIST_DDNS_IP
+    
+    sed -e 's/#.*$//' -e '/^$/d' $FILE_LIST_DDNS_HOST | while read HOST; do
+        echo -n "$HOST, "
+        getent hosts $HOST | awk '{ print $1 }' >> $FILE_LIST_DDNS_IP
+    done
+    echo -e "\b\b "
+fi
+
+if [ "$1" == "-f" ]; then
+    UPDATE=1
+else
+    md5sum --status -c "$FILE_LIST_DDNS_IP.md5"
+    UPDATE=$?
+fi
+
+if [ $UPDATE -ne 0 ]; then
+    if [ "$1" == "-f" ]; then
+        echo `date +"[%D %T]"` "Forcefully updating Iptables rules"
+    else
+        echo `date +"[%D %T]"` "DDNS Updated"
+    fi
+    
+    md5sum $FILE_LIST_DDNS_IP > "$FILE_LIST_DDNS_IP.md5"
+    
+    # Flush existing rules
+    /sbin/iptables -F DYNDOCKER
+    
+    # Whitelist static IPs from the file, if specified
+    if [ ! -z "$FILE_LIST_STATIC_IP" ] ; then
+        echo -n `date +"[%D %T]"` "Whitelisting static IPs - "
+        sed -e 's/#.*$//' -e '/^$/d' $FILE_LIST_STATIC_IP | while read IP; do
+            echo -n "$IP, "
+            /sbin/iptables -A DYNDOCKER -o $DOCKER_IFACE -s $IP -j DOCKER 
+        done
+        echo -e "\b\b "
+    fi
+    
+    # Add new IPs
+    echo -n `date +"[%D %T]"` "Whitelisting dynamic IPs - "
+    cat $FILE_LIST_DDNS_IP | while read IP; do 
+        echo -n "$IP, "
+        /sbin/iptables -A DYNDOCKER -o $DOCKER_IFACE -s $IP -j DOCKER
+    done
+    echo -e "\b\b "
+    
+    # Allow RELATED/ESTABLISHED connections
+    /sbin/iptables -A DYNDOCKER -o $DOCKER_IFACE -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    # Allow connections from container to internet
+    /sbin/iptables -A DYNDOCKER -i $DOCKER_IFACE ! -o $DOCKER_IFACE -j ACCEPT
+    # Allow connections from container to container
+    /sbin/iptables -A DYNDOCKER -i $DOCKER_IFACE -o $DOCKER_IFACE -j ACCEPT
+
+    # Drop all other connections
+    /sbin/iptables -A DYNDOCKER -o $DOCKER_IFACE -j DROP
+else
+    echo `date +"[%D %T]"` "DDNS Up-to-date"
+fi
